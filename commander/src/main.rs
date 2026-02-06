@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
+use std::net::Ipv6Addr;
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -46,6 +47,10 @@ enum Commands {
         #[arg(long)]
         ipv6_prefix: Option<String>,
 
+        /// Base port for the fleet (default: 20000)
+        #[arg(long, default_value_t = 20000)]
+        base_port: u16,
+
         /// User to run the service as (defaults to current user)
         #[arg(long)]
         user: Option<String>,
@@ -86,44 +91,72 @@ async fn main() -> anyhow::Result<()> {
             info!("Starting fleet with {} agents...", count);
             let mut handles = vec![];
             
-            // TODO: Load fleet config from env
             let fleet_id = std::env::var("COMMANDER_FLEET_ID").unwrap_or_else(|_| "fleet-local".into());
-            let base_port = 20000;
+            let ipv6_prefix = std::env::var("COMMANDER_IPV6_PREFIX").ok();
+            
+            let base_port = std::env::var("COMMANDER_BASE_PORT")
+                .ok()
+                .and_then(|p| p.parse::<u16>().ok())
+                .unwrap_or(20000);
 
             for i in 0..*count {
-                let agent_id = format!("{}-{}", fleet_id, i);
+                let agent_id = format!("{}-", fleet_id, i);
                 let agent_port = base_port + (i as u16 * 100);
                 
-                // TODO: Implement real IPv6 calculation logic
-                let ipv6 = None; 
+                // Calculate IPv6 if prefix is available
+                let ipv6 = if let Some(ref prefix) = ipv6_prefix {
+                    match calculate_ipv6(prefix, i) {
+                        Ok(ip) => Some(ip),
+                        Err(e) => {
+                            error!(agent_id = %agent_id, error = %e, "Failed to calculate IPv6");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
 
+                let agent_id_clone = agent_id.clone();
                 handles.push(tokio::spawn(async move {
-                    if let Err(e) = spawn_agent(&agent_id, ipv6, agent_port).await {
-                        error!(agent_id = %agent_id, error = %e, "Agent failed to start");
+                    if let Err(e) = spawn_agent(&agent_id_clone, ipv6.as_deref(), agent_port).await {
+                        error!(agent_id = %agent_id_clone, error = %e, "Agent failed to start");
                     }
                 }));
             }
 
-            // Wait for all agents (in a real scenario, we'd supervise them)
+            // Wait for all agents (supervision would happen here)
             for h in handles {
                 let _ = h.await;
             }
         }
-        Commands::Install { fleet_id, ipv6_prefix, user } => {
-            install_service(fleet_id, ipv6_prefix.as_deref(), user.as_deref()).await?;
+        Commands::Install { fleet_id, ipv6_prefix, base_port, user } => {
+            install_service(fleet_id, ipv6_prefix.as_deref(), *base_port, user.as_deref()).await?;
         }
     }
 
     Ok(())
 }
 
-async fn install_service(fleet_id: &str, ipv6_prefix: Option<&str>, user: Option<&str>) -> anyhow::Result<()> {
+/// Calculate a unique IPv6 address by adding an offset to a base prefix
+fn calculate_ipv6(prefix: &str, index: u32) -> anyhow::Result<String> {
+    let base_addr: Ipv6Addr = prefix.parse() 
+        .map_err(|_| anyhow::anyhow!("Invalid IPv6 prefix: {}", prefix))?;
+    
+    // Convert to u128 for bitwise math
+    let base_u128 = u128::from(base_addr);
+    
+    // Add the index to the address
+    let new_u128 = base_u128.checked_add(index as u128) 
+        .ok_or_else(|| anyhow::anyhow!("IPv6 address overflow for index {}", index))?;
+    
+    Ok(Ipv6Addr::from(new_u128).to_string())
+}
+
+async fn install_service(fleet_id: &str, ipv6_prefix: Option<&str>, base_port: u16, user: Option<&str>) -> anyhow::Result<()> {
     let current_exe = std::env::current_exe()?;
     let current_dir = std::env::current_dir()?;
     
-    // We assume the openclaw repo is the parent of the commander dir if running from source/dev
-    // Or strictly the current dir if built properly.
-    // For reliability in this monorepo context, let's locate openclaw.mjs relative to where we are running install from
+    // Locate openclaw.mjs relative to repo root
     let repo_root = if current_dir.join("openclaw.mjs").exists() {
         current_dir.clone()
     } else if current_dir.parent().map(|p| p.join("openclaw.mjs").exists()).unwrap_or(false) {
@@ -139,7 +172,6 @@ async fn install_service(fleet_id: &str, ipv6_prefix: Option<&str>, user: Option
     // 1. Copy binary to /usr/local/bin
     let target_bin = PathBuf::from("/usr/local/bin/openclaw-commander");
     info!("Copying binary to {:?}", target_bin);
-    // Note: This might fail if not sudo. We let it fail and print error.
     tokio::fs::copy(&current_exe, &target_bin).await.map_err(|e| {
         anyhow::anyhow!("Failed to copy binary to /usr/local/bin. Are you running with sudo? Error: {}", e)
     })?;
@@ -148,7 +180,6 @@ async fn install_service(fleet_id: &str, ipv6_prefix: Option<&str>, user: Option
     let run_as_user = if let Some(u) = user {
         u.to_string()
     } else {
-        // Get current user name if not provided
         std::env::var("USER").unwrap_or_else(|_| "root".to_string())
     };
 
@@ -161,7 +192,7 @@ async fn install_service(fleet_id: &str, ipv6_prefix: Option<&str>, user: Option
 
     let service_content = format!(
         r#"[Unit]
-Description=OpenClaw Fleet Commander
+Description=OpenClaw Fleet Commander ({fleet_id})
 After=network.target
 
 [Service]
@@ -171,9 +202,9 @@ WorkingDirectory={workdir}
 ExecStart={bin} start-fleet --count 1
 Restart=always
 RestartSec=5
-Environment="COMMANDER_FLEET_ID={fleet_id}"
+Environment=\"COMMANDER_FLEET_ID={fleet_id}\" 
+Environment="COMMANDER_BASE_PORT={base_port}"
 {ipv6_env}
-# Node.js specific
 Environment="NODE_ENV=production"
 
 [Install]
@@ -183,22 +214,24 @@ WantedBy=multi-user.target
         workdir = repo_root.display(),
         bin = target_bin.display(),
         fleet_id = fleet_id,
+        base_port = base_port,
         ipv6_env = ipv6_env
     );
 
-    let service_path = PathBuf::from("/etc/systemd/system/openclaw-commander.service");
+    let service_filename = format!("openclaw-commander-{}.service", fleet_id);
+    let service_path = PathBuf::from("/etc/systemd/system").join(&service_filename);
+    
     info!("Writing systemd unit to {:?}", service_path);
     tokio::fs::write(&service_path, service_content).await.map_err(|e| {
         anyhow::anyhow!("Failed to write systemd service file. Are you running with sudo? Error: {}", e)
     })?;
 
-    // 4. Instructions
     info!("Installation complete!");
     println!("\nTo enable and start the service, run:");
     println!("  sudo systemctl daemon-reload");
-    println!("  sudo systemctl enable --now openclaw-commander");
+    println!("  sudo systemctl enable --now {}", service_filename);
     println!("\nTo view logs:");
-    println!("  journalctl -u openclaw-commander -f");
+    println!("  journalctl -u {} -f", service_filename, service_filename);
 
     Ok(())
 }
@@ -208,7 +241,6 @@ async fn spawn_agent(id: &str, ipv6: Option<&str>, port: u16) -> anyhow::Result<
     let mut script_path = project_root.join("openclaw.mjs");
 
     if !script_path.exists() {
-        // Fallback to parent dir if running from 'commander/'
         if let Some(parent) = project_root.parent() {
             let fallback_path = parent.join("openclaw.mjs");
             if fallback_path.exists() {
@@ -222,9 +254,6 @@ async fn spawn_agent(id: &str, ipv6: Option<&str>, port: u16) -> anyhow::Result<
         anyhow::bail!("Could not find openclaw.mjs at {:?}", script_path);
     }
 
-    // Determine the isolated HOME for this agent
-    // In production: /var/lib/fleets/{id}
-    // In dev: project_root/.fleets/{id}
     let agent_home = project_root.join(".fleets").join(id);
     let config_dir = agent_home.join(".openclaw");
     tokio::fs::create_dir_all(&config_dir).await?;
@@ -267,7 +296,6 @@ async fn spawn_agent(id: &str, ipv6: Option<&str>, port: u16) -> anyhow::Result<
 
     let mut child = cmd.spawn()?;
 
-    // Capture stdout
     let stdout = child.stdout.take().expect("Failed to capture stdout");
     let stderr = child.stderr.take().expect("Failed to capture stderr");
 
@@ -283,12 +311,10 @@ async fn spawn_agent(id: &str, ipv6: Option<&str>, port: u16) -> anyhow::Result<
     tokio::spawn(async move {
         let mut reader = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = reader.next_line().await {
-            // Using warn! for stderr logs from the agent
             warn!(agent = %id_clone_err, "{}", line);
         }
     });
 
-    // Wait for the process to exit
     let status = child.wait().await?;
     
     if !status.success() {
