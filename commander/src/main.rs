@@ -5,19 +5,19 @@ mod state;
 mod utils;
 
 use dotenvy::dotenv;
-use std::sync::Arc;
-use tokio::net::TcpListener;
+// use std::sync::Arc;
+// use tokio::net::TcpListener;
 
+use axum::{Json, Router, extract::State, routing::get};
 use clap::{Parser, Subcommand};
-use tracing::{error, info};
-use axum::{routing::get, Router, Json, extract::State};
-use tower_http::trace::TraceLayer;
 use std::net::SocketAddr;
+use tower_http::trace::TraceLayer;
+use tracing::{error, info};
 
 use crate::agent::spawn_agent;
 use crate::service::install_service;
+use crate::state::{AgentState, FleetState, new_fleet_state};
 use crate::utils::calculate_ipv6;
-use crate::state::{new_fleet_state, FleetState, AgentState};
 
 #[derive(Parser)]
 #[command(name = "commander")]
@@ -94,10 +94,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::StartFleet { count } => {
             info!("Starting fleet with {} agents...", count);
-            
-            let fleet_id = std::env::var("COMMANDER_FLEET_ID").unwrap_or_else(|_| "fleet-local".into());
+
+            let fleet_id =
+                std::env::var("COMMANDER_FLEET_ID").unwrap_or_else(|_| "fleet-local".into());
             let ipv6_prefix = std::env::var("COMMANDER_IPV6_PREFIX").ok();
-            
+
             let base_port = std::env::var("COMMANDER_BASE_PORT")
                 .ok()
                 .and_then(|p| p.parse::<u16>().ok())
@@ -117,7 +118,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             for i in 0..*count {
                 let agent_id = format!("{}-{}", fleet_id, i);
                 let agent_port = base_port + (i as u16 * 100);
-                
+
                 let ipv6 = if let Some(ref prefix) = ipv6_prefix {
                     match calculate_ipv6(prefix, i) {
                         Ok(ip) => Some(ip),
@@ -133,9 +134,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let agent_id_clone = agent_id.clone();
                 let fleet_id_clone = fleet_id.clone();
                 let state_clone = state.clone();
-                
+
                 handles.push(tokio::spawn(async move {
-                    if let Err(e) = spawn_agent(&fleet_id_clone, &agent_id_clone, ipv6.as_deref(), agent_port, state_clone).await {
+                    if let Err(e) = spawn_agent(
+                        &fleet_id_clone,
+                        &agent_id_clone,
+                        ipv6.as_deref(),
+                        agent_port,
+                        state_clone,
+                    )
+                    .await
+                    {
                         error!(agent_id = %agent_id_clone, error = %e, "Agent failed to start");
                     }
                 }));
@@ -146,8 +155,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = h.await;
             }
         }
-        Commands::Install { fleet_id, ipv6_prefix, base_port, user } => {
-            install_service(fleet_id, ipv6_prefix.as_deref(), *base_port, user.as_deref()).await?;
+        Commands::Install {
+            fleet_id,
+            ipv6_prefix,
+            base_port,
+            user,
+        } => {
+            install_service(
+                fleet_id,
+                ipv6_prefix.as_deref(),
+                *base_port,
+                user.as_deref(),
+            )
+            .await?;
         }
         Commands::Exec { id, cmd } => {
             if cmd.is_empty() {
@@ -158,18 +178,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut project_root = std::env::current_dir()?;
             if !project_root.join("openclaw.mjs").exists() {
                 if let Some(parent) = project_root.parent() {
-                     if parent.join("openclaw.mjs").exists() {
-                         project_root = parent.to_path_buf();
-                     }
+                    if parent.join("openclaw.mjs").exists() {
+                        project_root = parent.to_path_buf();
+                    }
                 }
             }
-            
+
             // Use a default port for provisioning during exec if none exists
             let agent_home = crate::agent::ensure_config(id, &project_root, 20000).await?;
 
             info!(agent=%id, home=?agent_home, "Executing interactive command...");
             let script_arg = project_root.join("openclaw.mjs");
-            
+
             let status = tokio::process::Command::new("node")
                 .arg(&script_arg)
                 .args(cmd)
@@ -193,12 +213,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn start_api_server(port: u16, state: FleetState) -> anyhow::Result<()> {
     let app = Router::new()
         .route("/status", get(get_status))
+        .route("/agents/:id/stop", axum::routing::post(stop_agent))
+        .route("/agents/:id/start", axum::routing::post(start_agent))
+        .route("/agents/:id/restart", axum::routing::post(restart_agent))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     info!("Commander API listening on http://{}", addr);
-    
+
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
@@ -208,4 +231,52 @@ async fn get_status(State(state): State<FleetState>) -> Json<Vec<AgentState>> {
     let mut agents: Vec<AgentState> = state.lock().unwrap().values().cloned().collect();
     agents.sort_by(|a, b| a.id.cmp(&b.id));
     Json(agents)
+}
+
+async fn stop_agent(
+    State(state): State<FleetState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> (axum::http::StatusCode, &'static str) {
+    let tx = {
+        let state_guard = state.lock().unwrap();
+        state_guard.get(&id).and_then(|a| a.tx.clone())
+    };
+
+    if let Some(tx) = tx {
+        let _ = tx.send(crate::state::AgentCommand::Stop).await;
+        return (axum::http::StatusCode::OK, "Stop signal sent");
+    }
+    (axum::http::StatusCode::NOT_FOUND, "Agent not found")
+}
+
+async fn start_agent(
+    State(state): State<FleetState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> (axum::http::StatusCode, &'static str) {
+    let tx = {
+        let state_guard = state.lock().unwrap();
+        state_guard.get(&id).and_then(|a| a.tx.clone())
+    };
+
+    if let Some(tx) = tx {
+        let _ = tx.send(crate::state::AgentCommand::Start).await;
+        return (axum::http::StatusCode::OK, "Start signal sent");
+    }
+    (axum::http::StatusCode::NOT_FOUND, "Agent not found")
+}
+
+async fn restart_agent(
+    State(state): State<FleetState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> (axum::http::StatusCode, &'static str) {
+    let tx = {
+        let state_guard = state.lock().unwrap();
+        state_guard.get(&id).and_then(|a| a.tx.clone())
+    };
+
+    if let Some(tx) = tx {
+        let _ = tx.send(crate::state::AgentCommand::Restart).await;
+        return (axum::http::StatusCode::OK, "Restart signal sent");
+    }
+    (axum::http::StatusCode::NOT_FOUND, "Agent not found")
 }
