@@ -72,3 +72,7 @@ USER.md
 # local tooling
 .serena/
 .fleets/
+
+# Rust build artifacts
+target/
+**/target/
