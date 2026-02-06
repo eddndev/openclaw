@@ -6,10 +6,18 @@ pub struct OpenClawConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meta: Option<MetaConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<SessionConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub plugins: Option<PluginsConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channels: Option<HashMap<String, serde_json::Value>>,
     pub gateway: GatewayConfig,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SessionConfig {
+    #[serde(rename = "dmScope")]
+    pub dm_scope: String,
 }
 
 #[derive(Serialize, Deserialize)]

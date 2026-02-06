@@ -7,10 +7,17 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tracing::{error, info, warn};
 
+use std::os::unix::fs::PermissionsExt; // Import for permissions
+
 pub async fn ensure_config(agent_id: &str, project_root: &Path, port: u16) -> anyhow::Result<std::path::PathBuf> {
     let agent_home = project_root.join(".fleets").join(agent_id);
     let config_dir = agent_home.join(".openclaw");
     tokio::fs::create_dir_all(&config_dir).await?;
+
+    // Fix permissions: chmod 700 (rwx------)
+    let mut perms = tokio::fs::metadata(&config_dir).await?.permissions();
+    perms.set_mode(0o700);
+    tokio::fs::set_permissions(&config_dir, perms).await?;
 
     let config_path = config_dir.join("openclaw.json");
     if !config_path.exists() {
@@ -34,6 +41,9 @@ pub async fn ensure_config(agent_id: &str, project_root: &Path, port: u16) -> an
         let config = OpenClawConfig {
             meta: Some(crate::config::MetaConfig {
                 last_touched_version: "2026.2.3".to_string(),
+            }),
+            session: Some(crate::config::SessionConfig {
+                dm_scope: "per-channel-peer".to_string(),
             }),
             plugins: Some(crate::config::PluginsConfig {
                 entries: Some(plugin_entries),
