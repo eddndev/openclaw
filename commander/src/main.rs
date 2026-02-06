@@ -67,6 +67,16 @@ enum Commands {
         #[arg(long)]
         user: Option<String>,
     },
+    /// Execute a command inside an agent's environment (Interactive)
+    Exec {
+        /// The Agent ID (e.g. fleet-local-0)
+        #[arg(long)]
+        id: String,
+
+        /// The command and arguments to run (e.g. -- channels login)
+        #[arg(last = true)]
+        cmd: Vec<String>,
+    },
 }
 
 #[tokio::main]
@@ -138,6 +148,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Install { fleet_id, ipv6_prefix, base_port, user } => {
             install_service(fleet_id, ipv6_prefix.as_deref(), *base_port, user.as_deref()).await?;
+        }
+        Commands::Exec { id, cmd } => {
+            if cmd.is_empty() {
+                error!("No command provided. Use: commander exec --id <ID> -- <COMMAND>");
+                return Ok(());
+            }
+
+            let mut project_root = std::env::current_dir()?;
+            if !project_root.join("openclaw.mjs").exists() {
+                if let Some(parent) = project_root.parent() {
+                     if parent.join("openclaw.mjs").exists() {
+                         project_root = parent.to_path_buf();
+                     }
+                }
+            }
+            
+            // Use a default port for provisioning during exec if none exists
+            let agent_home = crate::agent::ensure_config(id, &project_root, 20000).await?;
+
+            info!(agent=%id, home=?agent_home, "Executing interactive command...");
+            let script_arg = project_root.join("openclaw.mjs");
+            
+            let status = tokio::process::Command::new("node")
+                .arg(&script_arg)
+                .args(cmd)
+                .env("HOME", &agent_home)
+                // Inherit Stdio for interactivity (QR codes, menus, Ctrl+C)
+                .stdin(std::process::Stdio::inherit())
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .status()
+                .await?;
+
+            if !status.success() {
+                std::process::exit(status.code().unwrap_or(1));
+            }
         }
     }
 

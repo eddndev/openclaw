@@ -1,10 +1,66 @@
 use crate::config::{GatewayAuthConfig, GatewayConfig, OpenClawConfig};
 use crate::state::{AgentState, AgentStatus, FleetState};
+use std::path::Path;
 use std::process::Stdio;
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tracing::{error, info, warn};
+
+pub async fn ensure_config(agent_id: &str, project_root: &Path, port: u16) -> anyhow::Result<std::path::PathBuf> {
+    let agent_home = project_root.join(".fleets").join(agent_id);
+    let config_dir = agent_home.join(".openclaw");
+    tokio::fs::create_dir_all(&config_dir).await?;
+
+    let config_path = config_dir.join("openclaw.json");
+    if !config_path.exists() {
+        info!(agent = %agent_id, "Provisioning new configuration");
+        let token = format!("tk_{}", uuid::Uuid::new_v4().simple());
+        
+        let mut plugin_entries = std::collections::HashMap::new();
+        plugin_entries.insert("whatsapp".to_string(), crate::config::PluginEntry { enabled: true });
+        plugin_entries.insert("google-gemini-cli-auth".to_string(), crate::config::PluginEntry { enabled: true });
+        
+        let extensions_dir = project_root.join("extensions");
+        let whatsapp_ext = extensions_dir.join("whatsapp");
+        let gemini_ext = extensions_dir.join("google-gemini-cli-auth");
+
+        let mut channels = std::collections::HashMap::new();
+        channels.insert("whatsapp".to_string(), serde_json::json!({
+            "dmPolicy": "open",
+            "allowFrom": ["*"]
+        }));
+
+        let config = OpenClawConfig {
+            meta: Some(crate::config::MetaConfig {
+                last_touched_version: "2026.2.3".to_string(),
+            }),
+            plugins: Some(crate::config::PluginsConfig {
+                entries: Some(plugin_entries),
+                load: Some(crate::config::PluginLoadConfig {
+                    paths: vec![
+                        whatsapp_ext.to_string_lossy().to_string(),
+                        gemini_ext.to_string_lossy().to_string(),
+                    ],
+                }),
+            }),
+            channels: Some(channels),
+            gateway: GatewayConfig {
+                mode: "local".to_string(),
+                port,
+                bind: "loopback".to_string(),
+                auth: GatewayAuthConfig {
+                    mode: "token".to_string(),
+                    token,
+                },
+            },
+        };
+        let json = serde_json::to_string_pretty(&config)?;
+        tokio::fs::write(&config_path, json).await?;
+    }
+
+    Ok(agent_home)
+}
 
 pub async fn spawn_agent(fleet_id: &str, id: &str, ipv6: Option<&str>, port: u16, state: FleetState) -> anyhow::Result<()> {
     // Register starting state
@@ -22,45 +78,16 @@ pub async fn spawn_agent(fleet_id: &str, id: &str, ipv6: Option<&str>, port: u16
     }
 
     let mut project_root = std::env::current_dir()?;
-    let mut script_path = project_root.join("openclaw.mjs");
-
-    if !script_path.exists() {
+    if !project_root.join("openclaw.mjs").exists() {
         if let Some(parent) = project_root.parent() {
-            let fallback_path = parent.join("openclaw.mjs");
-            if fallback_path.exists() {
-                script_path = fallback_path;
+            if parent.join("openclaw.mjs").exists() {
                 project_root = parent.to_path_buf();
             }
         }
     }
 
-    if !script_path.exists() {
-        anyhow::bail!("Could not find openclaw.mjs at {:?}", script_path);
-    }
-
-    let agent_home = project_root.join(".fleets").join(id);
-    let config_dir = agent_home.join(".openclaw");
-    tokio::fs::create_dir_all(&config_dir).await?;
-
-    // Provision config if missing
-    let config_path = config_dir.join("openclaw.json");
-    if !config_path.exists() {
-        info!(agent = %id, "Provisioning new configuration");
-        let token = format!("tk_{}", uuid::Uuid::new_v4().simple());
-        let config = OpenClawConfig {
-            gateway: GatewayConfig {
-                mode: "local".to_string(),
-                port,
-                bind: "loopback".to_string(),
-                auth: GatewayAuthConfig {
-                    mode: "token".to_string(),
-                    token,
-                },
-            },
-        };
-        let json = serde_json::to_string_pretty(&config)?;
-        tokio::fs::write(&config_path, json).await?;
-    }
+    let agent_home = ensure_config(id, &project_root, port).await?;
+    let script_path = project_root.join("openclaw.mjs");
 
     info!(agent = %id, home = ?agent_home, port = %port, "Spawning agent process");
 
