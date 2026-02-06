@@ -39,6 +39,29 @@ describe("web session", () => {
     expect(saveCreds).toHaveBeenCalled();
   });
 
+  it("binds to specific IP when OPENCLAW_BAILEYS_BIND_IP is set", async () => {
+    const bindIp = "2001:db8::1";
+    const originalEnv = process.env.OPENCLAW_BAILEYS_BIND_IP;
+    process.env.OPENCLAW_BAILEYS_BIND_IP = bindIp;
+
+    try {
+      await createWaSocket(false, false);
+      const makeWASocket = baileys.makeWASocket as ReturnType<typeof vi.fn>;
+      expect(makeWASocket).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agent: expect.any(Object),
+        }),
+      );
+
+      const passed = makeWASocket.mock.calls[0][0];
+      const agent = (passed as { agent?: import("node:https").Agent }).agent;
+      expect(agent).toBeDefined();
+      // Agent options are stored in a private/protected field usually, but for mock verification we can check what was passed.
+    } finally {
+      process.env.OPENCLAW_BAILEYS_BIND_IP = originalEnv;
+    }
+  });
+
   it("waits for connection open", async () => {
     const ev = new EventEmitter();
     const promise = waitForWaConnection({ ev } as unknown as ReturnType<

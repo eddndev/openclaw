@@ -21,6 +21,12 @@ OpenClaw pulls environment variables from multiple sources. The rule is **never 
 
 If the config file is missing entirely, step 4 is skipped; shell import still runs if enabled.
 
+## Critical Gateway Variables
+
+- `OPENCLAW_GATEWAY_PORT`: Calculated base port for the gateway and derived services.
+- `OPENCLAW_BAILEYS_BIND_IP`: Specific IPv6 address to bind WhatsApp (Baileys) outbound traffic to. Used for IPv6 rotation/anti-ban strategies.
+- `OPENCLAW_LOG_JSON`: Set to `true` to enable JSON-formatted logging for ingestion.
+
 ## Config `env` block
 
 Two equivalent ways to set inline env vars (both are non-overriding):

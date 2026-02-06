@@ -7,6 +7,7 @@ import {
 } from "@whiskeysockets/baileys";
 import { randomUUID } from "node:crypto";
 import fsSync from "node:fs";
+import { Agent } from "node:https";
 import qrcode from "qrcode-terminal";
 import { formatCliCommand } from "../cli/command-format.js";
 import { danger, success } from "../globals.js";
@@ -109,6 +110,18 @@ export async function createWaSocket(
   maybeRestoreCredsFromBackup(authDir);
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
   const { version } = await fetchLatestBaileysVersion();
+
+  const bindIp = process.env.OPENCLAW_BAILEYS_BIND_IP;
+  let agent: Agent | undefined;
+  if (bindIp) {
+    agent = new Agent({
+      localAddress: bindIp,
+      family: 6,
+      keepAlive: true,
+    });
+    sessionLogger.info({ bindIp }, "Using specific bind IP for WhatsApp");
+  }
+
   const sock = makeWASocket({
     auth: {
       creds: state.creds,
@@ -116,6 +129,7 @@ export async function createWaSocket(
     },
     version,
     logger,
+    agent,
     printQRInTerminal: false,
     browser: ["openclaw", "cli", VERSION],
     syncFullHistory: false,
