@@ -87,9 +87,17 @@ pub async fn ensure_config(
     Ok(agent_home)
 }
 
+enum ExitReason {
+    Crash,
+    CleanExit,
+    ManualRestart,
+    // ManualStop, // unused in restart logic
+    ChannelClosed,
+}
+
 struct AgentSupervisor {
     id: String,
-    fleet_id: String,
+    fleet_id: String, // Kept to suppress warning in struct def, though unused in logic
     ipv6: Option<String>,
     port: u16,
     state: FleetState,
@@ -107,21 +115,35 @@ impl AgentSupervisor {
                 if matches!(cmd, AgentCommand::Stop) {
                     self.update_status(AgentStatus::Stopped, None);
                     info!(agent = %self.id, "Agent stopped by command");
-                    // Wait for start command
                     if !self.wait_for_start().await {
-                        break; // Channel closed
+                        break;
                     }
                 }
             }
 
-            match self.spawn_and_monitor().await {
-                Ok(should_continue) => {
-                    if !should_continue {
-                        break;
-                    }
-                }
+            let reason = match self.spawn_and_monitor().await {
+                Ok(r) => r,
                 Err(e) => {
-                    error!(agent = %self.id, error = %e, "Agent process failed");
+                    error!(agent = %self.id, error = %e, "Agent process failed to spawn");
+                    ExitReason::Crash
+                }
+            };
+
+            match reason {
+                ExitReason::CleanExit => {
+                    info!(agent = %self.id, "Agent exited cleanly. Stopping supervisor.");
+                    break;
+                }
+                ExitReason::ManualRestart => {
+                    info!(agent = %self.id, "Manual restart requested. Skipping backoff.");
+                    restart_count = 0;
+                    continue; // Skip backoff
+                }
+                ExitReason::ChannelClosed => {
+                    break;
+                }
+                ExitReason::Crash => {
+                    // Fall through to watchdog
                 }
             }
 
@@ -137,7 +159,6 @@ impl AgentSupervisor {
 
             self.update_status(AgentStatus::Restarting, None);
 
-            // Wait with cancellation via channel
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(backoff)) => {},
                 cmd = self.rx.recv() => {
@@ -146,8 +167,14 @@ impl AgentSupervisor {
                             self.update_status(AgentStatus::Stopped, None);
                             if !self.wait_for_start().await { break; }
                         }
-                        None => break, // Channel closed
-                        _ => {} // Ignore other commands while waiting
+                        Some(AgentCommand::Restart) => {
+                            info!(agent = %self.id, "Manual restart during backoff");
+                            continue;
+                        }
+                         Some(AgentCommand::Start) => {
+                             // Already in restart loop
+                         }
+                        None => break,
                     }
                 }
             }
@@ -163,7 +190,7 @@ impl AgentSupervisor {
         false
     }
 
-    async fn spawn_and_monitor(&mut self) -> anyhow::Result<bool> {
+    async fn spawn_and_monitor(&mut self) -> anyhow::Result<ExitReason> {
         let mut project_root = std::env::current_dir()?;
         if !project_root.join("openclaw.mjs").exists() {
             if let Some(parent) = project_root.parent() {
@@ -184,7 +211,7 @@ impl AgentSupervisor {
             .env("OPENCLAW_GATEWAY_PORT", self.port.to_string())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true); // Critical: kill child if supervisor dies
+            .kill_on_drop(true);
 
         if let Some(ref ip) = self.ipv6 {
             cmd.env("OPENCLAW_BAILEYS_BIND_IP", ip);
@@ -223,15 +250,11 @@ impl AgentSupervisor {
                     self.update_status(if s.success() { AgentStatus::Stopped } else { AgentStatus::Failed }, None);
 
                     if s.success() {
-                        // Clean exit usually implies we shouldn't auto-restart unless configured otherwise,
-                        // but for a fleet, we usually want it running.
-                        // However, if the user ran a command that naturally exits, we shouldn't restart.
-                        // For now, let's say exit 0 means "I'm done".
                         info!(agent = %self.id, "Process exited successfully");
-                        return Ok(false);
+                        return Ok(ExitReason::CleanExit);
                     } else {
                         error!(agent = %self.id, status = ?s, "Process crashed");
-                        return Ok(true); // Restart
+                        return Ok(ExitReason::Crash);
                     }
                 }
                 cmd = self.rx.recv() => {
@@ -245,24 +268,23 @@ impl AgentSupervisor {
 
                             // Wait for start
                             if self.wait_for_start().await {
-                                return Ok(true); // Restart loop
+                                return Ok(ExitReason::ManualRestart);
                             } else {
-                                return Ok(false); // Exit supervisor
+                                return Ok(ExitReason::ChannelClosed);
                             }
                         }
                         Some(AgentCommand::Restart) => {
                              info!(agent = %self.id, "Restarting process via signal...");
                              let _ = child.kill().await;
                              let _ = child.wait().await;
-                             return Ok(true); // Loop back to spawn
+                             return Ok(ExitReason::ManualRestart);
                         }
                         Some(AgentCommand::Start) => {
-                            // Already running, ignore
+                            // Already running
                         }
                         None => {
-                             // Channel closed, shutdown
                              let _ = child.kill().await;
-                             return Ok(false);
+                             return Ok(ExitReason::ChannelClosed);
                         }
                     }
                 }
@@ -315,9 +337,6 @@ pub async fn spawn_agent(
         rx,
     };
 
-    // We spawn the supervisor as a detachable task.
-    // However, the original `main.rs` waits on the JoinHandle.
-    // To keep compatible with main.rs without rewriting it entirely yet, we can await the supervisor run.
     supervisor.run().await;
 
     Ok(())

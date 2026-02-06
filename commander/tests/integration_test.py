@@ -6,13 +6,13 @@ import signal
 import sys
 import json
 
-COMMANDER_PORT = 19999
+COMMANDER_PORT = 24999
 BASE_URL = f"http://localhost:{COMMANDER_PORT}"
 
 def log(msg):
-    print(f"[TEST] {msg}")
+    print(f"[TEST] {msg}", flush=True)
 
-def wait_for_api(retries=10):
+def wait_for_api(retries=30):
     for i in range(retries):
         try:
             requests.get(f"{BASE_URL}/status")
@@ -47,9 +47,9 @@ def test_fleet():
     commander_proc = subprocess.Popen(
         ["cargo", "run", "--manifest-path", "commander/Cargo.toml", "--", "start-fleet", "--count", "1"],
         env=env,
-        stdout=subprocess.PIPE, # Capture to avoid clutter, or inherit to see? Let's inherit for now to see logs
-        stderr=subprocess.PIPE,
-        preexec_fn=os.setsid # Create new session group so we can kill everything
+        stdout=sys.stdout, # Inherit to see logs directly in this terminal
+        stderr=sys.stderr,
+        preexec_fn=os.setsid # Create new session group
     )
 
     try:
