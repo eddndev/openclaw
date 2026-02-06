@@ -1,5 +1,5 @@
-   0.033021894s  INFO prepare_target{force=false package_id=commander v0.1.0 (/home/eddndev/dev/node/openclaw/commander) target="commander"}: cargo::core::compiler::fingerprint: fingerprint error for commander v0.1.0 (/home/eddndev/dev/node/openclaw/commander)/Check { test: false }/TargetInner { name: "commander", doc: true, ..: with_path("/home/eddndev/dev/node/openclaw/commander/src/main.rs", Edition2024) }
-   0.033041288s  INFO prepare_target{force=false package_id=commander v0.1.0 (/home/eddndev/dev/node/openclaw/commander) target="commander"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/eddndev/dev/node/openclaw/commander/target/debug/.fingerprint/commander-1c769a71bc1a5e55/bin-commander`
+   0.044617368s  INFO prepare_target{force=false package_id=commander v0.1.0 (/home/eddndev/dev/node/openclaw/commander) target="commander"}: cargo::core::compiler::fingerprint: fingerprint error for commander v0.1.0 (/home/eddndev/dev/node/openclaw/commander)/Check { test: false }/TargetInner { name: "commander", doc: true, ..: with_path("/home/eddndev/dev/node/openclaw/commander/src/main.rs", Edition2024) }
+   0.044631677s  INFO prepare_target{force=false package_id=commander v0.1.0 (/home/eddndev/dev/node/openclaw/commander) target="commander"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/eddndev/dev/node/openclaw/commander/target/debug/.fingerprint/commander-3231bfb0948847c4/bin-commander`
 
 Caused by:
     No such file or directory (os error 2)
@@ -41,8 +41,8 @@ Stack backtrace:
   24: __libc_start_call_main
   25: __libc_start_main_alias_1
   26: <unknown>
-   0.043070172s  INFO prepare_target{force=false package_id=commander v0.1.0 (/home/eddndev/dev/node/openclaw/commander) target="commander"}: cargo::core::compiler::fingerprint: fingerprint error for commander v0.1.0 (/home/eddndev/dev/node/openclaw/commander)/Check { test: true }/TargetInner { name: "commander", doc: true, ..: with_path("/home/eddndev/dev/node/openclaw/commander/src/main.rs", Edition2024) }
-   0.043080859s  INFO prepare_target{force=false package_id=commander v0.1.0 (/home/eddndev/dev/node/openclaw/commander) target="commander"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/eddndev/dev/node/openclaw/commander/target/debug/.fingerprint/commander-e369d5a4035546c0/test-bin-commander`
+   0.053716899s  INFO prepare_target{force=false package_id=commander v0.1.0 (/home/eddndev/dev/node/openclaw/commander) target="commander"}: cargo::core::compiler::fingerprint: fingerprint error for commander v0.1.0 (/home/eddndev/dev/node/openclaw/commander)/Check { test: true }/TargetInner { name: "commander", doc: true, ..: with_path("/home/eddndev/dev/node/openclaw/commander/src/main.rs", Edition2024) }
+   0.053728749s  INFO prepare_target{force=false package_id=commander v0.1.0 (/home/eddndev/dev/node/openclaw/commander) target="commander"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/eddndev/dev/node/openclaw/commander/target/debug/.fingerprint/commander-7bf257b572450a04/test-bin-commander`
 
 Caused by:
     No such file or directory (os error 2)
@@ -85,6 +85,6 @@ Stack backtrace:
   25: __libc_start_main_alias_1
   26: <unknown>
     Checking commander v0.1.0 (/home/eddndev/dev/node/openclaw/commander)
-error: could not compile `commander` (bin "commander") due to 2 previous errors
+error: could not compile `commander` (bin "commander") due to 1 previous error
 warning: build failed, waiting for other jobs to finish...
-error: could not compile `commander` (bin "commander" test) due to 2 previous errors
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

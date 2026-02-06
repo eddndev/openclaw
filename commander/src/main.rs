@@ -1,14 +1,19 @@
 mod agent;
 mod config;
 mod service;
+mod state;
 mod utils;
 
 use clap::{Parser, Subcommand};
 use tracing::{error, info};
+use axum::{routing::get, Router, Json, extract::State};
+use tower_http::trace::TraceLayer;
+use std::net::SocketAddr;
 
 use crate::agent::spawn_agent;
 use crate::service::install_service;
 use crate::utils::calculate_ipv6;
+use crate::state::{new_fleet_state, FleetState, AgentState};
 
 #[derive(Parser)]
 #[command(name = "commander")]
@@ -66,14 +71,15 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     let cli = Cli::parse();
+    let state = new_fleet_state();
 
     match &cli.command {
         Commands::RunAgent { id, ipv6, port } => {
-            spawn_agent(id, ipv6.as_deref(), *port).await?;
+            // For single agent run, we use a generic fleet id
+            spawn_agent("single-run", id, ipv6.as_deref(), *port, state.clone()).await?;
         }
         Commands::StartFleet { count } => {
             info!("Starting fleet with {} agents...", count);
-            let mut handles = vec![];
             
             let fleet_id = std::env::var("COMMANDER_FLEET_ID").unwrap_or_else(|_| "fleet-local".into());
             let ipv6_prefix = std::env::var("COMMANDER_IPV6_PREFIX").ok();
@@ -83,11 +89,21 @@ async fn main() -> anyhow::Result<()> {
                 .and_then(|p| p.parse::<u16>().ok())
                 .unwrap_or(20000);
 
+            // Start API Server
+            let api_port = base_port - 1;
+            let state_for_server = state.clone();
+            tokio::spawn(async move {
+                if let Err(e) = start_api_server(api_port, state_for_server).await {
+                    error!("API server failed: {}", e);
+                }
+            });
+
+            let mut handles = vec![];
+
             for i in 0..*count {
                 let agent_id = format!("{}-{}", fleet_id, i);
                 let agent_port = base_port + (i as u16 * 100);
                 
-                // Calculate IPv6 if prefix is available
                 let ipv6 = if let Some(ref prefix) = ipv6_prefix {
                     match calculate_ipv6(prefix, i) {
                         Ok(ip) => Some(ip),
@@ -101,8 +117,11 @@ async fn main() -> anyhow::Result<()> {
                 };
 
                 let agent_id_clone = agent_id.clone();
+                let fleet_id_clone = fleet_id.clone();
+                let state_clone = state.clone();
+                
                 handles.push(tokio::spawn(async move {
-                    if let Err(e) = spawn_agent(&agent_id_clone, ipv6.as_deref(), agent_port).await {
+                    if let Err(e) = spawn_agent(&fleet_id_clone, &agent_id_clone, ipv6.as_deref(), agent_port, state_clone).await {
                         error!(agent_id = %agent_id_clone, error = %e, "Agent failed to start");
                     }
                 }));
@@ -119,4 +138,23 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+async fn start_api_server(port: u16, state: FleetState) -> anyhow::Result<()> {
+    let app = Router::new()
+        .route("/status", get(get_status))
+        .layer(TraceLayer::new_for_http())
+        .with_state(state);
+
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    info!("Commander API listening on http://{}", addr);
+    
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+async fn get_status(State(state): State<FleetState>) -> Json<Vec<AgentState>> {
+    let agents = state.lock().unwrap().values().cloned().collect();
+    Json(agents)
 }

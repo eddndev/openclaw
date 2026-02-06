@@ -1,1 +1,1 @@
-/home/eddndev/dev/node/openclaw/commander/target/debug/commander: /home/eddndev/dev/node/openclaw/commander/src/main.rs
+/home/eddndev/dev/node/openclaw/commander/target/debug/commander: /home/eddndev/dev/node/openclaw/commander/src/agent.rs /home/eddndev/dev/node/openclaw/commander/src/config.rs /home/eddndev/dev/node/openclaw/commander/src/main.rs /home/eddndev/dev/node/openclaw/commander/src/service.rs /home/eddndev/dev/node/openclaw/commander/src/state.rs /home/eddndev/dev/node/openclaw/commander/src/utils.rs

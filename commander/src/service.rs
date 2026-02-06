@@ -80,7 +80,7 @@ WantedBy=multi-user.target
     println!("  sudo systemctl daemon-reload");
     println!("  sudo systemctl enable --now {}", service_filename);
     println!("\nTo view logs:");
-    println!("  journalctl -u {} -f", service_filename, service_filename);
+    println!("  journalctl -u {} -f", service_filename);
 
     Ok(())
 }
