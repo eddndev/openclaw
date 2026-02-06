@@ -4,6 +4,10 @@ mod service;
 mod state;
 mod utils;
 
+use dotenvy::dotenv;
+use std::sync::Arc;
+use tokio::net::TcpListener;
+
 use clap::{Parser, Subcommand};
 use tracing::{error, info};
 use axum::{routing::get, Router, Json, extract::State};
@@ -66,8 +70,8 @@ enum Commands {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // Initialize logging
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    dotenv().ok();
     tracing_subscriber::fmt::init();
 
     let cli = Cli::parse();
@@ -155,6 +159,7 @@ async fn start_api_server(port: u16, state: FleetState) -> anyhow::Result<()> {
 }
 
 async fn get_status(State(state): State<FleetState>) -> Json<Vec<AgentState>> {
-    let agents = state.lock().unwrap().values().cloned().collect();
+    let mut agents: Vec<AgentState> = state.lock().unwrap().values().cloned().collect();
+    agents.sort_by(|a, b| a.id.cmp(&b.id));
     Json(agents)
 }
