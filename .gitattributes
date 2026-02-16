@@ -1,2 +1,4 @@
 * text=auto eol=lf
 dist/* linguist-generated=true
+*.ts linguist-detectable=false
+*.tsx linguist-detectable=false
